@@ -1,0 +1,126 @@
+#lammps input script for methane adsorption in illite slits of 1-5nm under 1-50MPa, 333K
+label               change-poresize
+variable            poresize index  40
+variable            pressure index  5
+variable            pressatom equal v_pressure*9.8692
+variable            fugacity_coeff  index 0.950666
+variable            density index 0.23703574
+label               sorption
+variable            temp    index   363
+variable            mu index -0.08
+variable            disp index 0.5
+variable            NAvogad equal 6.02e+23
+variable            surface equal 9630.04e-20
+variable            initFvolA3 equal 171553.40
+variable            initFvol equal 171553.40e-24
+variable            Nfreq equal 1000
+variable            Nexchange equal 100
+variable            Nmove equal 100
+variable            Nevery equal 10
+variable            Nrepeat equal 100
+variable            Nstart equal $(v_Nfreq*3000)
+variable            Rgasconst equal 8.3144598 
+variable            MPatoPa equal 1.0e+6
+variable            A3tom3 equal 1.0e-30
+variable            unit2STD equal ${MPatoPa}*${A3tom3}
+variable            binsize equal 0.1
+variable            initPoreSize equal 40
+variable            zdelta equal $(v_poresize-v_initPoreSize)
+variable            xlo equal 0
+variable            xhi equal 6.8159999999999997e+01
+variable            ylo equal 0
+variable            yhi equal 6.8879999999999995e+01
+variable            zlo equal 0
+variable            initzhi equal 5.6750000000000000e+01
+variable            zhi equal $(v_zdelta+5.6750000000000000e+01)
+variable            lx equal $(v_xhi-v_xlo)
+variable            ly equal $(v_yhi-v_ylo)
+variable            lz equal $(v_zhi-v_zlo)
+variable            deltaV equal $(v_zdelta*11722.8)
+variable            FvolA3 equal $(v_initFvolA3+v_deltaV)
+variable            Fvol   equal $(v_FvolA3*1.0e-24)
+
+
+
+#label               sorption
+units               metal
+atom_style          full
+dimension           3
+boundary            p p p
+pair_style          lj/cut   12.5
+
+read_data           MSgraphene3.35-relax.data
+#create_atoms        2 random 5 9999999 
+#create_atoms        2  single $(0.5*v_xlo+0.5*v_xhi) $(0.5*v_zlo+0.5*v_yhi) $(0.5*v_zlo+0.5*v_zhi)
+region              ${poresize}-${pressure} block ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi} units box
+region              ReUpHalf block ${xlo} ${xhi} ${ylo} ${yhi} $((v_initzhi+v_zlo)/2) ${initzhi} units box side in
+region              pore block ${xlo} ${xhi} ${ylo} ${yhi} 10 45 units box side in
+
+create_atoms        2 random 5 9999999 pore units box 
+
+pair_coeff          1 1   0.00241285  3.4 
+pair_coeff          2 2   0.01272737  3.73 
+pair_modify         mix  arithmetic
+
+group               upperlayer region ReUpHalf
+change_box          upperlayer z delta 0 ${zdelta} units box
+displace_atoms      upperlayer move 0 0 ${zdelta}
+group               methane type 2
+group               c type 1
+
+#keep illite slit rigid
+neigh_modify        delay 0 every 1 check yes
+fix                 fixc c setforce 0.0 0.0 0.0
+
+compute             ${poresize}_${pressure}Tch4   methane     temp
+velocity            methane create ${temp} 9999 dist gaussian temp ${poresize}_${pressure}Tch4 units box loop local
+compute_modify      ${poresize}_${pressure}Tch4   dynamic/dof  yes
+fix                 ${poresize}_${pressure}nvt  methane  nvt temp  ${temp}  ${temp}  100.0
+fix_modify          ${poresize}_${pressure}nvt  dynamic/dof  yes  temp  ${poresize}_${pressure}Tch4
+
+#gcmc
+fix                 ${poresize}_${pressure}sorption methane gcmc ${Nfreq} ${Nexchange} ${Nmove} 2 9999999 ${temp} ${mu} ${disp} pressure ${pressatom} fugacity_coeff ${fugacity_coeff} charge 0 group methane grouptype 2 methane tfac_insert 1
+
+#adsorption amount
+variable            ch4  atom  "type == 2"
+group               ch4 dynamic methane every ${Nfreq} var ch4
+variable            Nch4 equal count(ch4)
+variable            Nmmol equal v_Nch4*1000/v_NAvogad
+variable            Nmmolpers equal v_Nmmol/v_surface
+variable            Mmass        equal   16.04246
+variable            nex          equal   v_Nch4/v_NAvogad-v_density*v_Fvol/v_Mmass
+variable            nexmmolm2    equal   v_nex*1000/v_surface
+
+fix                 111  all ave/time  ${Nevery} ${Nrepeat} ${Nfreq} v_Nch4 v_Nmmol v_Nmmolpers v_nex v_nexmmolm2 ave running start ${Nstart} file ./dump/dump-${poresize}-${pressure}.txt
+
+variable            Nch4ave   equal  f_111[1]
+variable            Nmmolave   equal   f_111[2]
+variable            Nmmolpersave equal  f_111[3]
+variable            nexave  equal  f_111[4]
+variable            nexmmolm2ave equal f_111[5]
+
+#density distribution
+compute             ${poresize}_${pressure}  methane   chunk/atom   bin/3d x lower ${lx} y lower ${ly} z lower ${binsize} nchunk  every  limit  0  ids   every compress no discard  mixed pbc no units   box   bound  z ${zlo} ${zhi}
+
+fix                 methanedensity    methane ave/chunk ${Nevery} ${Nrepeat} ${Nfreq} ${poresize}_${pressure} density/mass norm sample  ave running file ./dump/density-${poresize}-${pressure}.txt overwrite
+
+compute_modify      thermo_temp dynamic/dof yes
+thermo_style        custom step atoms spcpu pe temp c_${poresize}_${pressure}Tch4 v_Nch4 v_Nch4ave
+#thermo_modify       lost ignore lost/bond ignore flush yes
+thermo              1000
+
+dump ${poresize}_${pressure}_Dump all atom 3000000  ./dump/dump.*.${poresize}-${pressure}
+dump_modify        ${poresize}_${pressure}_Dump   scale  no
+
+timestep 0.001
+
+run                 6000000 #$(v_Nfreq*10000)
+
+write_data          ./dump/data.${poresize}A-${pressure}MPa
+
+clear
+reset_timestep      0
+next                pressure fugacity_coeff density
+jump                SELF sorption
+next                poresize
+jump                SELF change-poresize

@@ -1,0 +1,31 @@
+units           metal
+dimension       3
+boundary        p p p
+atom_style      full
+
+read_data       MSgraphene3.35-1.lammps05 #grapheneccm.lammps05 #MSgraphene3.35.data
+
+newton on
+
+pair_style      airebo  12.5 1 1
+pair_coeff      *  *  CH.airebo  C
+
+neighbor  0.5 bin
+neigh_modify delay 0 every 1 check yes page 5000000 one 500000 
+
+velocity    all create 333 999999 dist gaussian #page 5000000 one 500000
+
+timestep 0.001
+
+fix         ccmnvt all nvt temp 333 333 100
+
+thermo_style custom step atoms temp press pe ke etotal
+thermo_modify lost ignore #lost/bond ignore
+thermo 1000
+
+dump 3 all atom 100000 graphene-nvt.*.dump
+
+run         500000 #every 1 "set group nok vx 0 vy 0 vz 0"
+
+write_data  MSgraphene3.35-relax.data
+

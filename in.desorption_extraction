@@ -1,0 +1,227 @@
+# lammps input script for methane desorption in Illite 3nm slit under 50MPa
+
+variable            Nfreq equal 1000
+
+#lammps 初始设置
+units               real
+dimension           3
+boundary            p p p
+atom_style          full
+pair_style          lj/cut 12.5
+#pair_modify         mix arithmetic tail no
+#bond_style          harmonic
+#angle_style         harmonic
+read_data           data.40A-50MPa
+pair_coeff          1 1 0.05564 3.40
+pair_coeff          2 2 0.2935   3.73
+pair_coeff          1 2 0.1081133 3.565
+
+#根据data文件定义变量*lo和*hi，存储盒子的几何信息
+
+variable            xlo equal 0  
+variable            xhi equal 6.8159999999999997e+01
+variable            lx  equal $(v_xhi-v_xlo)
+variable            ylo equal 0
+variable            yhi equal 6.8879999999999995e+01
+variable            ly  equal $(v_yhi-v_ylo)
+variable            zlo equal 0
+variable            zhi equal 5.6750000000000000e+01
+#定义z方向的中分点，将z方向一分为二
+variable            midz equal $(0.5*v_zlo+0.5*v_zhi)
+#定义各种区域 all为模拟盒子的全部区域，lower为z方向中点以下的区域，upper为以上的区域，free为狭缝孔的自由相区域，根据密度分布图定出
+region              all block ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${zhi}
+region              lower block  ${xlo} ${xhi} ${ylo} ${yhi} ${zlo} ${midz}
+region              upper block ${xlo} ${xhi} ${ylo} ${yhi} ${midz} ${zhi}
+region              free block ${xlo} ${xhi} ${ylo} ${yhi} 17.75 39.15 side in units box #18.25 51.75 side in units box
+region              firstlayer1 block ${xlo} ${xhi} ${ylo} ${yhi} 10.15 13.95 side in units box
+region              firstlayer2 block ${xlo} ${xhi} ${ylo} ${yhi} 42.95 46.75 side in units box
+region              firstlayer union 2 firstlayer1 firstlayer2
+region              secondlayer1 block ${xlo} ${xhi} ${ylo} ${yhi} 13.95 17.75 side in units box
+region              secondlayer2 block ${xlo} ${xhi} ${ylo} ${yhi} 39.15 42.95 side in units box
+region              secondlayer union 2 secondlayer1 secondlayer2
+#定义原子组，upperIllite为狭缝孔上半部分的illite原子，lowerillite为下半部分的illite原子
+group               mmt type 1
+group               methane type 2 
+group               upper region upper
+group               lower region lower
+group               Uppermmt intersect upper mmt
+group               Lowermmt intersect lower mmt
+group               HKCh4 type 2
+#定义处于自由相区域的甲烷为freem
+group               freem dynamic methane region free every 1
+group               freems region free
+#定义吸附层的甲烷组
+group               firstlayer region firstlayer
+group               secondlayer region secondlayer
+
+#variable            inif count(firstlayerg)
+#variable            inis count(secondlayerg)
+#variable            init count(freems)
+
+#求解孔间距
+variable            boundlower equal bound(Lowermmt,zmax)
+variable            boundupper equal bound(Uppermmt,zmin)
+print               "boundlower == ${boundlower}"
+print               "boundupper == ${boundupper}"
+
+#定义孔区域
+region              pore block ${xlo} ${xhi} ${ylo} ${yhi} ${boundlower} ${boundupper} side in units box
+
+neigh_modify        delay 0 every 1 check yes exclude group mmt mmt
+fix                 fixmmt mmt setforce 0.0 0.0 0.0
+
+variable            temp equal 333
+
+# area of yz surface and unit convertion
+variable            porely equal $(v_yhi-v_ylo)   # A
+variable            porelz equal $(v_boundupper-v_boundlower)
+print               "poresize == ${porelz}"
+variable            yzarea equal $(v_porely*v_porelz)
+variable            deltaP equal 10     # MPa
+variable            MPa2atm equal 9.8692327
+variable            MPa2Pa equal 1.0e+6
+variable            J2kcal equal 0.2389e-3
+variable            m2A equal 1.0e+10
+variable            m22A2 equal 1.0e+20
+variable            NAvogad equal 6.02e+23
+variable            Unitconvert equal $(v_MPa2Pa*v_J2kcal*v_NAvogad/(v_m2A*v_m2A*v_m2A)) #unit convertion
+variable            Nevery equal 10
+variable            Nrepeat equal 100
+variable            Nfreq equal 1000
+variable            binsize equal 0.1
+
+variable            Nmethane equal count(methane)
+variable            ch4  atom  "type == 2"
+group               ch4 dynamic methane var ch4
+variable            Nmethanes equal ${Nmethane}
+variable            Nch4 equal count(ch4)
+
+variable Mloop equal 100 #tmax
+variable MNstart equal 902000000 #ave start time step
+variable m loop 100
+variable Nstart equal 9000000*v_m-7000000 #(v_m*2-1)*2000000
+variable n equal v_m-1
+
+timestep 1
+
+label loop1
+
+shell mkdir ${n}
+
+print "Nmethanes equal to ${Nmethanes}"
+variable            fvalue equal v_deltaP*v_yzarea/v_Nmethanes #convert deltaP to external force
+variable            F equal ${fvalue}*${Unitconvert} #kcal/mol.A
+
+compute             ${n}xtemp methane temp/partial 0 1 0 # compute temperature only on y direction to control the temperature of flow
+compute_modify      ${n}xtemp dynamic/dof yes
+velocity            methane create 333 12368163 temp ${n}xtemp loop geom
+velocity            mmt set 0 0 0
+
+fix                 move methane nvt temp 333 333 100 #nvt md 333K
+fix_modify          move temp ${n}xtemp
+fix                 ch4force methane addforce ${F} 0.0 0.0 #addforce on every atoms
+
+#gloable z
+compute             ${n}densitychunk  methane   chunk/atom   bin/3d x lower ${lx} y lower ${ly} z lower ${binsize} nchunk  every  limit  0  ids   every compress no discard  mixed pbc no units   box   bound  z ${zlo} ${zhi}
+#global density-distribution-z
+fix                 ${n}densitychunkave methane ave/chunk ${Nevery} ${Nrepeat} ${Nfreq} ${n}densitychunk density/mass norm sample ave running  file ${n}/density-distribution-z-3nm-${deltaP}-${n}.txt overwrite
+
+compute             ${n}vxave ch4 reduce/region free ave vx
+fix                 ${n}131 methane ave/time  10 100 1000 c_${n}vxave mode scalar ave running start ${Nstart} file ${n}/vx-ave-3nm-${deltaP}-${n}.txt overwrite
+
+variable            vxave equal f_${n}131 #A/fs
+variable            ch4 atom "type == 2"
+group               ch4 dynamic methane every ${Nfreq} var ch4
+variable            Nch4122 equal count(firstlayer,secondlayer)
+variable            Nch4123 equal count(firstlayer,free)
+variable            Nch4221 equal count(secondlayer,firstlayer)
+variable            Nch4223 equal count(secondlayer,free)
+variable            Nch4321 equal count(freems,firstlayer)
+variable            Nch4322 equal count(freems,secondlayer)
+
+thermo_style        custom step spcpu atoms temp pe ke etotal c_${n}xtemp v_Nch4 c_${n}vxave f_${n}131 v_Nch4122 v_Nch4123 v_Nch4221 v_Nch4223 v_Nch4321 v_Nch4322
+thermo_modify       lost ignore flush yes temp ${n}xtemp
+thermo              1000
+
+dump                dump2 all custom 2500000 ${n}/mmt-desorption-${deltaP}-${n}.*.dump id type element x y z
+dump_modify         dump2 sort id element C Al
+dump                ch4dump methane custom 1000 ${n}/ch4-desorption-${deltaP}-${n}.*.dump id type xu yu zu
+dump_modify         ch4dump sort id
+
+restart             1000000 ${n}/mmt-desorption-${n}.*.restart
+
+run                 5000000
+write_data          ${n}/data.${n}.equilibrium
+
+print "vx equal to ${vxave}"
+
+variable            t equal 2000 #fs
+variable            dl equal $(v_vxave*v_t)
+if "${dl} > 0" then "variable            efxlo equal $(v_xhi-v_dl)" else " variable            efxlo equal $(v_xhi-0.000000001)"
+region              ${m}ef block ${efxlo} ${xhi} ${ylo} ${yhi} 17.75 39.15 side in units box
+variable            d equal count(methane,${m}ef)
+variable            d1 equal count(firstlayer,${m}ef)
+variable            d2 equal count(secondlayer,${m}ef)
+variable            d3 equal count(freems,${m}ef)
+group               delch4 dynamic methane region ${m}ef every 1
+
+#delete_atoms        region ${m}ef compress yes
+
+thermo_style        custom step spcpu atoms temp pe ke etotal v_d1 v_d2 v_d3 v_d
+thermo_modify       lost ignore flush yes temp ${n}xtemp
+thermo              1000
+
+#delete_atoms        region ${m}ef compress yes
+
+run                 0
+
+delete_atoms        region ${m}ef compress yes
+
+write_data          ${n}/data.${m}.delete
+
+#fix                 extraction methane evaporate 1000 ${Ndelch4} free 666666
+
+unfix move
+unfix ch4force
+uncompute             ${n}densitychunk
+uncompute             ${n}xtemp
+unfix                 ${n}densitychunkave
+uncompute             ${n}vxave
+unfix                 ${n}131
+variable vxave delete
+undump dump2
+undump ch4dump
+
+next m
+jump in.velocity loop1
+
+shell mkdir last
+
+compute             lastxtemp methane temp/partial 0 1 0 # compute temperature only on y direction to control the temperature of flow
+compute_modify      lastxtemp dynamic/dof yes
+fix                 move methane nvt temp 333 333 100 #nvt md 333K
+fix_modify          move temp lastxtemp
+fix                 ch4force methane addforce ${F} 0.0 0.0 #addforce on every atoms
+
+compute             lastdensitychunk  methane   chunk/atom   bin/3d x lower ${lx} y lower ${ly} z lower ${binsize} nchunk  every  limit  0  ids   every compress no discard  mixed pbc no units   box   bound  z ${zlo} ${zhi}
+
+fix                 lastdensitychunkave methane ave/chunk ${Nevery} ${Nrepeat} ${Nfreq} lastdensitychunk density/mass norm sample ave running  file last/density-distribution-z-3nm-${deltaP}-${Mloop}.txt overwrite
+
+compute             lastvxave ch4 reduce/region free ave vx
+fix                 last131 methane ave/time 10 100 1000 c_lastvxave mode scalar ave running start ${MNstart} file last/vx-ave-3nm-${deltaP}-${Mloop}.txt overwrite
+
+variable            vxave equal f_131 #A/fs
+
+thermo_style        custom step spcpu atoms temp pe ke etotal c_lastxtemp v_Nch4 c_lastvxave f_last131 v_Nch4122 v_Nch4123 v_Nch4221 v_Nch4223 v_Nch4321 v_Nch4322
+thermo_modify       lost ignore flush yes temp lastxtemp
+thermo              1000
+
+dump                dump2 all custom 2000000 last/mmt-desorption-${deltaP}-${Mloop}.*.dump id type element x y z
+dump_modify         dump2 sort id element C X
+dump                ch4dump methane custom 1000 last/ch4-desorption-${deltaP}-${Mloop}.*.dump id type xu yu zu
+dump_modify         ch4dump sort id
+
+restart             1000000 last/mmt-desorption-last.*.restart
+
+run                 9000000
+write_data          last/data.${Mloop}.equilibrium
